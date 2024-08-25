@@ -1,0 +1,290 @@
+import pdfplumber
+import pandas as pd
+import re
+
+# Słownik plików PDF i odpowiadających im numerów stron oraz lat
+pdf_files = {
+    'C:/Users/kobos/python/dane/abb-sec.pdf': ([169, 171], ['2023', '2022']),  # Pełna ścieżka do pliku PDF i lata
+    'C:/Users/kobos/python/dane/abb sec 2021.pdf': ([164, 166], ['2021', '2020'])  # Pełna ścieżka do pliku PDF i lata
+}
+# %% 1)wzorce do wyciagania danych ze stron  !!!!!!!!!!
+# Wzorce do wyciągania danych
+
+#Co to jest re.compile?
+    #re.compile to funkcja w Pythonie, która pomaga przygotować wzorzec do wyszukiwania w tekście. Wzorzec to coś w rodzaju szablonu, który mówi, jakiego rodzaju tekstu szukasz.
+
+    #Dlaczego używamy re.compile?
+    #Szybkość: Jeśli zamierzasz szukać tego samego wzorca wiele razy, re.compile sprawia, że jest to szybsze. Zamiast tworzyć wzorzec za każdym razem od nowa, tworzysz go raz i używasz wielokrotnie.
+    #Porządek: Trzymanie wzorca w zmiennej sprawia, że kod jest bardziej przejrzysty i łatwiejszy do zrozumienia.
+    #Jak to działa?
+    #Tworzysz wzorzec: Używasz re.compile, aby stworzyć wzorzec.
+    #Używasz wzorca: Używasz tego wzorca do wyszukiwania w tekście
+
+
+
+#%%
+revenue_pattern = re.compile(
+    r'\b(?:Total revenues|revenues|Total)\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+cost_of_sales_pattern = re.compile(
+    r'Total cost of sales\s+\(?'
+    r'(\d{1,3}(?:,\d{3})*)\)?\s+\(?'
+    r'(\d{1,3}(?:,\d{3})*)\)?'
+)
+gross_profit_pattern = re.compile(
+    r'Gross profit\s+\(?(\d{1,3}(?:,\d{3})*)\)?\s+\(?(\d{1,3}(?:,\d{3})*)\)?'
+)
+koszty_zarzadu = re.compile(
+    r'Selling, general and administrative expenses\s+\(?(\d{1,3}(?:,\d{3})*)\)?\s+\(?(\d{1,3}(?:,\d{3})*)\)?'
+)
+BR_pattern = re.compile(
+    r'Non-order related research and development expenses\s+\(?(\d{1,3}(?:,\d{3})*)\)?\s+\(?(\d{1,3}(?:,\d{3})*)\)?'
+)
+EBIT = re.compile(
+    r'Income from operations\s+\(?(\d{1,3}(?:,\d{3})*)\)?\s+\(?(\d{1,3}(?:,\d{3})*)\)?'
+)
+Zysk_przed_opodatkowaniem_pattern = re.compile(
+    r'Income from continuing operations before taxes\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+Zysk_po_opodatkowaniem_pattern = re.compile(
+    r'\b(?:Income from continuing operations, net of tax|net of tax)\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+inwestcje_krotkoterminowe_pattern = re.compile(
+    r'\b(?:Marketable securities and short-term investment|Marketable securities and short-term investments)\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+cash_pattern = re.compile(
+    r'Cash and equivalents\s+'  # Dopasowanie tekstu "Cash and equivalents" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+naleznosci_pattern = re.compile(
+    r'\b(?:Receivables, net)\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+zapasy_pattern = re.compile(
+    r'\b(?:Inventories, net)\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+#Inventories,
+aktywa_obrotowe_pattern = re.compile(
+    r'\b(?:Total current assets)\b\s+'
+    r'(\d{1,3}(?:,\d{3})*)\s+'
+    r'(\d{1,3}(?:,\d{3})*)'
+
+)
+
+aktywa_razem_pattern = re.compile(
+     r'\b(?:'
+    r'Total assets'
+    r')\b\s+'  # Dopasowanie tekstu "Total revenues" i jednej lub więcej spacji
+    r'(\d{1,3}(?:,\d{3})*)\s+'  # Dopasowanie liczby dla pierwszego roku
+    r'(\d{1,3}(?:,\d{3})*)'     # Dopasowanie liczby dla drugiego roku
+)
+# Tworzymy pusty DataFrame do przechowywania wszystkich danych
+all_data = pd.DataFrame()
+
+# Funkcja do przetwarzania pojedynczego pliku PDF
+def process_pdf(pdf_path, page_numbers, years):
+    data = {
+        'Metric': [],
+        'Order': [],
+        years[0]: [],
+        years[1]: []
+    }
+
+    # Otwieramy plik PDF i łączymy tekst z wszystkich stron
+    full_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_number in page_numbers:
+            # Pobieramy określoną stronę
+            page = pdf.pages[page_number]
+            # Wyciągamy tekst ze strony i dodajemy do pełnego tekstu
+            full_text += page.extract_text() + "\n"
+
+     # Wyświetlenie pełnego tekstu dla debugowania
+    #print(f"Full text for {pdf_path}:\n{full_text}")
+
+    # Dopasowanie wzorców do pełnego tekstu
+    revenue_match = revenue_pattern.search(full_text)
+    gross_profit_match = gross_profit_pattern.search(full_text)
+    cost_of_sales_match = cost_of_sales_pattern.search(full_text)
+    BR_match = BR_pattern.search(full_text)
+    cash_match = cash_pattern.search(full_text)
+    koszty_zarzadu_match = koszty_zarzadu.search(full_text)
+    EBIT_match = EBIT.search(full_text)
+    Zysk_przed_opodatkowaniem_match = Zysk_przed_opodatkowaniem_pattern.search(full_text)
+    Zysk_po_opodatkowaniem_match = Zysk_po_opodatkowaniem_pattern.search(full_text)
+    inwestcje_krotkoterminowe_match = inwestcje_krotkoterminowe_pattern.search(full_text)
+    naleznosci_match = naleznosci_pattern.search(full_text)
+    zapasy_match = zapasy_pattern.search(full_text)
+    aktywa_obrotowe_match = aktywa_obrotowe_pattern.search(full_text)
+    aktywa_razem_match = aktywa_razem_pattern.search(full_text)
+
+    # Wyświetlenie wyników dopasowań dla debugowania
+    #print(f"aktywa_razem_match for {pdf_path}: {aktywa_razem_match}")
+    #print(f"aktywa_obrotowe_match for {pdf_path}: {aktywa_obrotowe_match}")
+
+    # Funkcja pomocnicza do dodawania danych do słownika
+    def append_data(metric, match, years, order):
+        data['Metric'].append(metric)
+        data['Order'].append(order)
+        for i, year in enumerate(years):
+            if match and i + 1 <= len(match.groups()):
+                data[year].append(match.group(i + 1))
+            else:
+                data[year].append('N/A')
+
+    # Dodawanie danych do słownika z zachowaniem kolejności
+    append_data('Total revenues', revenue_match, years, 1)
+    append_data('Total cost of sales', cost_of_sales_match, years, 2)
+    append_data('Gross profit', gross_profit_match, years, 3)
+    append_data('koszty zarządu', koszty_zarzadu_match, years, 4)
+    append_data('B+R', BR_match, years, 5)
+    append_data('EBIT', EBIT_match, years, 7)
+    append_data('inwestycje krotkoterminowe', inwestcje_krotkoterminowe_match, years, 11)
+    append_data('Cash and equivalents', cash_match, years, 12)
+    append_data('należności',naleznosci_match, years, 13)
+    append_data('zapasy',zapasy_match, years, 14)
+    append_data('aktywa obrotowe',aktywa_obrotowe_match, years, 15)
+#%% inne operacyjbe           nowe dane( liczone z poprzednich) !!!!!!!!!
+    pozostale_operacyjne =[]
+    for i, year in enumerate(years):
+        if gross_profit_match and koszty_zarzadu_match and BR_match and EBIT_match:
+            try:
+                gb = int(gross_profit_match.group(i+1).replace(",",""))
+                kz = int(koszty_zarzadu_match.group(i+1).replace(",",""))
+                br = int(BR_match.group(i+1).replace(",",""))
+                ebit = int(EBIT_match.group(i+1).replace(",",""))
+                inne_koszty_operacyjne = gb - kz - br - ebit
+                pozostale_operacyjne.append(f"{inne_koszty_operacyjne:,}")
+            except ( IndexError, ValueError):
+                pozostale_operacyjne.append('N/A')
+        else:
+            pozostale_operacyjne.append('N/A')
+        
+    data['Metric'].append('inne koszty operacyjne')
+    data['Order'].append(6)
+    data[years[0]].append(pozostale_operacyjne[0])
+    data[years[1]].append(pozostale_operacyjne[1])
+#%% tax
+
+    podatek =[]
+    for i, year in enumerate(years):
+        if Zysk_przed_opodatkowaniem_match and Zysk_po_opodatkowaniem_match:
+            try:
+                Zysk_przed = int(Zysk_przed_opodatkowaniem_match.group(i+1).replace(",",""))
+                Zysk_po = int(Zysk_po_opodatkowaniem_match.group(i+1).replace(",",""))
+                
+                tax = (Zysk_przed - Zysk_po)/Zysk_przed
+                podatek.append(f"{tax:,}")
+            except ( IndexError, ValueError):
+                podatek.append('N/A')
+        else:
+            podatek.append('N/A')
+        
+    data['Metric'].append('tax')
+    data['Order'].append(10)
+    data[years[0]].append(podatek[0])
+    data[years[1]].append(podatek[1])
+#%% aktywa trwale
+
+    aktywa_trwale = []
+    for i, year in enumerate(years): 
+        if aktywa_razem_match and aktywa_obrotowe_match: 
+            try:
+                AR = int(aktywa_razem_match.group(i+1).replace(",", ""))
+                AO = int(aktywa_obrotowe_match.group(i+1).replace(",", ""))
+                AT = AR - AO
+                #print(f"Year: {year}, AR: {AR}, AO: {AO}, AT: {AT}")
+                aktywa_trwale.append(f"{AT:,}")
+            except ( IndexError, ValueError) as e:
+                print(f"Error processing year {year}: {e}")
+                aktywa_trwale.append('N/A')
+        else:
+            print(f"No match for year {year}")
+            aktywa_trwale.append("N/A")
+
+    data['Metric'].append('aktywa trwałe')
+    data['Order'].append(16)
+    data[years[0]].append(aktywa_trwale[0])
+    data[years[1]].append(aktywa_trwale[1])
+
+
+
+
+    max_length = max(len(data['Metric']), len(data['Order']), len(data[years[0]]), len(data[years[1]]))
+    for key in data:
+        while len(data[key]) < max_length:
+            data[key].append('N/A')
+
+#%%
+# int = konwertuje tekst na liczby
+# metoda: replace(",","") zamienia przecinek na "nic"
+# group(i+1) wyciąga i-grupę dopasowania
+#gross_profit_match to obiekt dopasowania wyrażenia regularnego dla "Gross profit".
+
+#%%
+    # Tworzenie DataFrame z danych
+    df = pd.DataFrame(data)
+    return df
+
+# Iteracja przez słownik plików PDF i przetwarzanie każdego z nich
+for pdf_path, (page_numbers, years) in pdf_files.items():
+    df = process_pdf(pdf_path, page_numbers, years)
+    all_data = pd.concat([all_data, df], ignore_index=True)
+
+
+# Przekształcenie danych, aby były odpowiednio dopasowane do kolumn lat
+all_data = all_data.melt(id_vars=['Metric', 'Order'], var_name='Year', value_name='Value')
+all_data = all_data.pivot_table(index=['Metric', 'Order'], columns='Year', values='Value', aggfunc='first').reset_index()
+
+# Usuń wiersze z 'N/A' w kolumnie 'Order'
+all_data = all_data[all_data['Order'] != 'N/A']
+
+# Konwertuj kolumnę 'Order' na typ int
+all_data['Order'] = all_data['Order'].astype(int)
+
+# Sortowanie według kolumny 'Order' i usunięcie kolumny 'Order'
+all_data = all_data.sort_values('Order').drop(columns=['Order'])
+
+# Sortowanie kolumn lat w odpowiedniej kolejności
+all_data = all_data[['Metric'] + sorted(all_data.columns[1:], reverse=True)]
+
+# Ścieżka do pliku Excel, do którego zapiszemy dane
+excel_path = 'DCF.xlsx'
+
+# Zapisujemy połączony DataFrame do pliku Excel
+all_data.to_excel(excel_path, index=False)
+
+print(f'Dane zostały zapisane do pliku {excel_path}')    
+'''
+# Przekształcenie danych, aby były odpowiednio dopasowane do kolumn lat
+all_data = all_data.melt(id_vars=['Metric', 'Order'], var_name='Year', value_name='Value')
+all_data = all_data.pivot_table(index=['Metric', 'Order'], columns='Year', values='Value', aggfunc='first').reset_index()
+
+
+# Sortowanie według kolumny 'Order' i usunięcie kolumny 'Order'
+all_data = all_data.sort_values('Order').drop(columns=['Order'])
+
+# Sortowanie kolumn lat w odpowiedniej kolejności
+all_data = all_data[['Metric'] + sorted(all_data.columns[1:], reverse=True)]
+
+# Ścieżka do pliku Excel, do którego zapiszemy dane
+excel_path = 'DCF.xlsx'
+
+# Zapisujemy połączony DataFrame do pliku Excel
+all_data.to_excel(excel_path, index=False)
+
+print(f'Dane zostały zapisane do pliku {excel_path}')
+
+'''
